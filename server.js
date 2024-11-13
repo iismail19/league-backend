@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 5005;
 const BASE_URL = "https://americas.api.riotgames.com";
 const MATCH_LIST_URL = "/lol/match/v5/matches/by-puuid/";
 const GET_ACCOUNT_BY_SUMMONER_NAME = "/riot/account/v1/accounts/by-riot-id/";
-const API_KEY = "api_key=RGAPI-94ca1028-1ba5-4803-9306-0ec567a98252";
+const API_KEY = "api_key=" + process.env.API_KEY;
 
 function getByRiotIdURL(body) {
   const urlFriendlyGameName = encodeURIComponent(body.gameName);
