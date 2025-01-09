@@ -34,7 +34,6 @@ function getByRiotIdURL(body) {
   return url;
 }
 
-// https://americas.api.riotgames.com/lol/match/v5/matches/by-puuid/hsyDuYWkD_BwUgbT7gh6LpTDod0HkcrnfUGMf6-skt1nT2w1OChFnnQvZzSpRHw8JWPl2xIsobFsLg/ids?start=0&count=20&api_key=RGAPI-bfc88fc3-057d-45ef-b513-a16440632a36
 function getMatchesURL(body) {
   const url =
     BASE_URL + MATCH_LIST_URL + body + "/" + "ids?start=0&count=20&" + API_KEY;
