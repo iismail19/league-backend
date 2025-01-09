@@ -1,6 +1,10 @@
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
+require("dotenv").config();
+
+// get values from env
+console.log(process.env.API_KEY);
 
 const app = express();
 app.use(express.json());
@@ -12,6 +16,7 @@ const PORT = process.env.PORT || 5005;
 
 const BASE_URL = "https://americas.api.riotgames.com";
 const MATCH_LIST_URL = "/lol/match/v5/matches/by-puuid/";
+const MATCH_URL = "/lol/match/v5/matches/";
 const GET_ACCOUNT_BY_SUMMONER_NAME = "/riot/account/v1/accounts/by-riot-id/";
 const API_KEY = "api_key=" + process.env.API_KEY;
 
@@ -36,14 +41,43 @@ function getMatchesURL(body) {
   return url;
 }
 
+//https://americas.api.riotgames.com/lol/match/v5/matches/NA1_5180785472?api_key=
+function getMatchDataURL(matchId) {
+  const url = BASE_URL + MATCH_URL + matchId + "?" + API_KEY;
+  return url;
+}
+
 // Get user puuid by gameName and tagLine
 app.post("/", async (req, res) => {
   try {
-    console.log(req.body);
+    // console.log(req.body);
+    // get puuid
     const url = getByRiotIdURL(req.body);
     const response = await axios.get(url);
-    console.log(response.data); // Print to the console
-    res.json(response.data); // Send the response to the client
+    console.log(response.data);
+
+    //get matches
+    const matchesURL = getMatchesURL(response.data.puuid);
+    const listOfMatches = await axios.get(matchesURL);
+    console.log(listOfMatches.data);
+
+    // get data for each mathch add add that to a map with match_id and retreived data
+    // todo remove
+    let matchDataList = [];
+    for (let i = 0; i < listOfMatches.data.length; i++) {
+      const matchId = listOfMatches.data[i];
+      const matchDataURL = getMatchDataURL(matchId);
+      const matchData = await axios.get(matchDataURL);
+      console.log(matchData.data);
+      matchDataList.push(matchData.data);
+    }
+
+    const matchResponse = {
+      puuid: response.data.puuid,
+      matchDataList: matchDataList,
+    };
+
+    res.json(matchResponse); // Send the response to the client
   } catch (error) {
     console.error(error);
     res.status(500).json({
@@ -75,6 +109,4 @@ app.post("/matches", async (req, res) => {
   }
 });
 
-// Request for specific match id
-
-//
+// Get all matches from a single request
