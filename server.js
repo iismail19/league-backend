@@ -70,7 +70,10 @@ app.post(
     const cacheKey = `puuid-${req.body.gameName}-${req.body.tagline}`;
     let puuidData = cache.get(cacheKey);
 
-    if (!puuidData) {
+    if (puuidData) {
+      console.log(`Cache hit for PUUID data: ${cacheKey}`);
+    } else {
+      console.log(`Cache miss for PUUID data: ${cacheKey}`);
       const url = getByRiotIdURL(req.body);
       const response = await limitedRequest(
         () => axios.get(url, { retry: 3, retryDelay: 1000 }) // Custom retry logic
@@ -82,7 +85,10 @@ app.post(
     const matchesCacheKey = `matches-${puuidData.puuid}`;
     let matchDataList = cache.get(matchesCacheKey);
 
-    if (!matchDataList) {
+    if (matchDataList) {
+      console.log(`Cache hit for match data: ${matchesCacheKey}`);
+    } else {
+      console.log(`Cache miss for match data: ${matchesCacheKey}`);
       const matchesURL = getMatchesURL(puuidData.puuid);
       const listOfMatches = await limitedRequest(
         () => axios.get(matchesURL, { retry: 3, retryDelay: 1000 }) // Custom retry logic
@@ -94,8 +100,10 @@ app.post(
         listOfMatches.data.map((matchId) =>
           limitedRequest(async () => {
             if (matchCache.has(matchId)) {
+              console.log(`Cache hit for individual match data: ${matchId}`);
               return matchCache.get(matchId);
             }
+            console.log(`Cache miss for individual match data: ${matchId}`);
             const matchDataURL = getMatchDataURL(matchId);
             const matchData = await axios.get(matchDataURL, {
               retry: 3,
