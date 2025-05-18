@@ -7,7 +7,7 @@ const Bottleneck = require("bottleneck");
 require("dotenv").config();
 
 // Log API key for debugging
-console.log(process.env.API_KEY);
+console.log("Loaded API Key:", process.env.API_KEY);
 
 // Apply custom retry logic using axios interceptors since axios-retry did not work
 axios.interceptors.response.use(null, async (error) => {
@@ -42,7 +42,8 @@ const API_KEY = `api_key=${process.env.API_KEY}`;
 const cache = new NodeCache({ stdTTL: 600 }); // Cache for 10 minutes
 
 const limiter = new Bottleneck({
-  maxConcurrent: 10, // Limit to 10 concurrent requests
+  maxConcurrent: 15, // Allow up to 15 concurrent requests
+  minTime: 67, // At least 67ms between requests (15 per second)
 });
 
 const limitedRequest = (fn) => limiter.schedule(fn); // Wrap axios requests with Bottleneck
@@ -64,11 +65,16 @@ const asyncHandler = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next);
 
 // Get user PUUID by gameName and tagLine
+const retriedMatchesCache = new Map();
+
 app.post(
   "/",
   asyncHandler(async (req, res) => {
     const cacheKey = `puuid-${req.body.gameName}-${req.body.tagline}`;
     let puuidData = cache.get(cacheKey);
+
+    // Reset retried matches cache for a new search
+    retriedMatchesCache.clear();
 
     if (puuidData) {
       console.log(`Cache hit for PUUID data: ${cacheKey}`);
@@ -96,32 +102,64 @@ app.post(
 
       const matchCache = new Map();
 
+      const failedMatches = [];
       matchDataList = await Promise.all(
-        listOfMatches.data.map((matchId) =>
-          limitedRequest(async () => {
-            if (matchCache.has(matchId)) {
-              console.log(`Cache hit for individual match data: ${matchId}`);
-              return matchCache.get(matchId);
-            }
-            console.log(`Cache miss for individual match data: ${matchId}`);
-            const matchDataURL = getMatchDataURL(matchId);
-            const matchData = await axios.get(matchDataURL, {
-              retry: 3,
-              retryDelay: 1000,
-            }); // Custom retry logic
-            matchCache.set(matchId, matchData.data);
-            return matchData.data;
-          })
-        )
+        listOfMatches.data.map(async (matchId) => {
+          try {
+            return await limitedRequest(async () => {
+              if (matchCache.has(matchId)) {
+                console.log(`Cache hit for individual match data: ${matchId}`);
+                return matchCache.get(matchId);
+              }
+              console.log(`Cache miss for individual match data: ${matchId}`);
+              const matchDataURL = getMatchDataURL(matchId);
+              console.log("Request URL:", matchDataURL);
+              const matchData = await axios.get(matchDataURL, {
+                retry: 3,
+                retryDelay: 1000,
+              }); // Custom retry logic
+              matchCache.set(matchId, matchData.data);
+              return matchData.data;
+            });
+          } catch (err) {
+            console.error(
+              `Failed to fetch match data for matchId: ${matchId}`,
+              err.message
+            );
+            failedMatches.push(matchId);
+            return null;
+          }
+        })
       );
 
-      cache.set(matchesCacheKey, matchDataList);
-    }
+      // Filter out nulls (failed matches)
+      const successfulMatches = matchDataList.filter(Boolean);
 
-    res.json({
-      puuid: puuidData.puuid,
-      matchDataList,
-    });
+      cache.set(matchesCacheKey, successfulMatches);
+
+      // Retry failed matches in the background
+      if (failedMatches.length > 0) {
+        failedMatches.forEach((matchId, idx) => {
+          setTimeout(async () => {
+            try {
+              const matchDataURL = getMatchDataURL(matchId);
+              const matchData = await limitedRequest(() =>
+                axios.get(matchDataURL, { retry: 3, retryDelay: 1000 })
+              );
+              retriedMatchesCache.set(matchId, matchData.data);
+            } catch (err) {
+              // Still failed, do nothing
+            }
+          }, 15000 * idx); // Stagger retries by 15 seconds per match
+        });
+      }
+
+      res.json({
+        puuid: puuidData.puuid,
+        matchDataList: successfulMatches,
+        failedMatches,
+      });
+    }
   })
 );
 
@@ -136,6 +174,17 @@ app.post(
     res.json(response.data);
   })
 );
+
+// Endpoint for frontend to fetch retried match data
+app.get("/retried-match/:matchId", (req, res) => {
+  const match = retriedMatchesCache.get(req.params.matchId);
+  if (match) {
+    retriedMatchesCache.delete(req.params.matchId); // Remove after sending
+    res.json({ match });
+  } else {
+    res.status(404).json({ match: null });
+  }
+});
 
 // Error handling middleware
 app.use((err, req, res, next) => {
