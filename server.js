@@ -93,6 +93,13 @@ app.post(
 
     if (matchDataList) {
       console.log(`Cache hit for match data: ${matchesCacheKey}`);
+      // Always respond with the same structure
+      res.json({
+        puuid: puuidData.puuid,
+        matchDataList,
+        failedMatches: [], // No failed matches when serving from cache
+      });
+      return; // Prevent further execution
     } else {
       console.log(`Cache miss for match data: ${matchesCacheKey}`);
       const matchesURL = getMatchesURL(puuidData.puuid);
