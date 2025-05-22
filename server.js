@@ -11,17 +11,38 @@ console.log("Loaded API Key:", process.env.API_KEY);
 
 // Apply custom retry logic using axios interceptors since axios-retry did not work
 axios.interceptors.response.use(null, async (error) => {
-  const { config } = error;
+  const { config, response } = error;
   if (!config || !config.retry) return Promise.reject(error);
 
   config.retryCount = config.retryCount || 0;
   if (config.retryCount >= config.retry) return Promise.reject(error);
 
   config.retryCount += 1;
-  console.log(`Retrying request... Attempt ${config.retryCount}`);
-  await new Promise((resolve) =>
-    setTimeout(resolve, config.retryDelay || 1000)
-  );
+
+  if (response && response.status === 403) {
+    console.error(
+      `403 Forbidden for URL: ${config.url} (Attempt ${config.retryCount})`
+    );
+    // Do not retry on 403, return error immediately
+    return Promise.reject(error);
+  }
+
+  // Handle 429 (rate limit) with exponential backoff or Retry-After
+  if (response && response.status === 429) {
+    const retryAfter = response.headers["retry-after"]
+      ? parseInt(response.headers["retry-after"], 10) * 1000
+      : 5000; // Default to 5 seconds if not provided
+    console.warn(
+      `Rate limited (429). Backing off for ${retryAfter}ms (Attempt ${config.retryCount})`
+    );
+    await new Promise((resolve) => setTimeout(resolve, retryAfter));
+  } else {
+    // Normal retry delay
+    await new Promise((resolve) =>
+      setTimeout(resolve, config.retryDelay || 1000)
+    );
+  }
+
   return axios(config);
 });
 
@@ -42,8 +63,8 @@ const API_KEY = `api_key=${process.env.API_KEY}`;
 const cache = new NodeCache({ stdTTL: 600 }); // Cache for 10 minutes
 
 const limiter = new Bottleneck({
-  maxConcurrent: 15, // Allow up to 15 concurrent requests
-  minTime: 67, // At least 67ms between requests (15 per second)
+  maxConcurrent: 20, // Allow up to 20 concurrent requests
+  minTime: 50, // At least 50ms between requests (20 per second)
 });
 
 const limitedRequest = (fn) => limiter.schedule(fn); // Wrap axios requests with Bottleneck
@@ -157,7 +178,7 @@ app.post(
             } catch (err) {
               // Still failed, do nothing
             }
-          }, 15000 * idx); // Stagger retries by 15 seconds per match
+          }, 100 * idx); // Minimal 100ms stagger to avoid burst
         });
       }
 
