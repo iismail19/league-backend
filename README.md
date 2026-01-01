@@ -12,13 +12,13 @@ A small Express backend that queries Riot APIs and exposes useful endpoints for 
    npm install
    ```
 
-2. Create a `.env` file with your Riot API key (already created locally for you):
+2. Create a `.env` file with your Riot API key (created locally for you):
 
    ```env
-   API_KEY=RGAPI-81ff667c-05cb-454a-a7d2-eb5ceb3a6101
+   API_KEY=REDACTED_OR_SET_IN_ENV
    ```
 
-   **Important:** `.env` is ignored by git. Do not commit your API key.
+   **Important:** **Do not commit your API key.** Keep `.env` locally and out of source control; use environment variables or a secrets manager for CI.
 
 3. Start development server:
 
