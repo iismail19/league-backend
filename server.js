@@ -7,10 +7,12 @@ const Bottleneck = require("bottleneck");
 const helmet = require("helmet");
 require("dotenv").config();
 
-// Validate environment variables
-if (!process.env.API_KEY) {
+// Validate environment variables (allow running in development without API_KEY)
+if (!process.env.API_KEY && process.env.NODE_ENV !== 'development') {
   console.error("❌ API_KEY is missing from environment variables.");
   process.exit(1);
+} else if (!process.env.API_KEY && process.env.NODE_ENV === 'development') {
+  console.warn("⚠️ Running in development mode without API_KEY; endpoints will use mock data where available.");
 }
 
 const PORT = process.env.PORT || 5005;
@@ -220,6 +222,48 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cors());
 app.use(compression());
 app.use(helmet()); // Security headers
+
+// Development mock: if running in development without an API key, provide a simple mock response
+if (process.env.NODE_ENV === 'development' && !process.env.API_KEY) {
+  app.post('/', (req, res) => {
+    const { gameName, tagline } = req.body || {};
+    const puuid = 'dev-puuid';
+    const sampleMatch = {
+      metadata: { matchId: 'MOCK-1' },
+      info: {
+        gameMode: 'CLASSIC',
+        queueId: 420,
+        participants: [
+          {
+            puuid,
+            championName: 'Ahri',
+            kills: 10,
+            deaths: 2,
+            assists: 8,
+            teamId: 100,
+            lane: 'Mid',
+            totalMinionsKilled: 150,
+            riotIdGameName: gameName || 'DevPlayer',
+          },
+          {
+            puuid: 'opponent-1',
+            championName: 'Darius',
+            kills: 2,
+            deaths: 10,
+            assists: 1,
+            teamId: 200,
+            lane: 'Top',
+            totalMinionsKilled: 80,
+            riotIdGameName: 'Opponent',
+          },
+        ],
+        teams: [{ teamId: 100, win: true }, { teamId: 200, win: false }],
+      },
+    };
+
+    return res.json({ puuid, matchDataList: [sampleMatch], failedMatches: [] });
+  });
+}
 
 // In-memory cache for retried matches
 const retriedMatchesCache = new Map();
