@@ -18,6 +18,10 @@ const BASE_URL = "https://americas.api.riotgames.com";
 const MATCH_LIST_URL = "/lol/match/v5/matches/by-puuid/";
 const MATCH_URL = "/lol/match/v5/matches/";
 const GET_ACCOUNT_BY_SUMMONER_NAME = "/riot/account/v1/accounts/by-riot-id/";
+const SUMMONER_BY_NAME = "/lol/summoner/v4/summoners/by-name/";
+const SUMMONER_BY_PUUID = "/lol/summoner/v4/summoners/by-puuid/";
+const LEAGUE_BY_SUMMONER = "/lol/league/v4/entries/by-summoner/";
+const CHAMPION_MASTERY_BY_SUMMONER = "/lol/champion-mastery/v4/champion-masteries/by-summoner/";
 const API_KEY = `api_key=${process.env.API_KEY}`;
 
 console.info("✅ Loaded API Key.");
@@ -34,17 +38,141 @@ const limitedRequest = (fn) => limiter.schedule(fn);
 const asyncHandler = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next);
 
+// Create Express app (declare early so routes can be defined in any order)
+const app = express();
+
 // Helper: build URLs
 const getByRiotIdURL = ({ gameName, tagline }) =>
   `${BASE_URL}${GET_ACCOUNT_BY_SUMMONER_NAME}${encodeURIComponent(
     gameName
   )}/${tagline}?${API_KEY}`;
 
+const getSummonerByNameURL = (summonerName) =>
+  `${BASE_URL}${SUMMONER_BY_NAME}${encodeURIComponent(summonerName)}?${API_KEY}`;
+
+const getSummonerByPUUIDURL = (puuid) =>
+  `${BASE_URL}${SUMMONER_BY_PUUID}${encodeURIComponent(puuid)}?${API_KEY}`;
+
+const getLeagueEntriesURL = (encryptedSummonerId) =>
+  `${BASE_URL}${LEAGUE_BY_SUMMONER}${encodeURIComponent(encryptedSummonerId)}?${API_KEY}`;
+
+const getChampionMasteryBySummonerURL = (encryptedSummonerId) =>
+  `${BASE_URL}${CHAMPION_MASTERY_BY_SUMMONER}${encodeURIComponent(encryptedSummonerId)}?${API_KEY}`;
+
 const getMatchesURL = (puuid, start = 0, count = 20) =>
   `${BASE_URL}${MATCH_LIST_URL}${puuid}/ids?start=${start}&count=${count}&${API_KEY}`;
 
 const getMatchDataURL = (matchId) =>
   `${BASE_URL}${MATCH_URL}${matchId}?${API_KEY}`;
+
+const getMatchTimelineURL = (matchId) =>
+  `${BASE_URL}${MATCH_URL}${matchId}/timeline?${API_KEY}`;
+
+// GET /summoner/name/:summonerName - fetch summoner by name (cached)
+app.get(
+  "/summoner/name/:summonerName",
+  asyncHandler(async (req, res) => {
+    const summonerName = req.params.summonerName;
+    const cacheKey = `summoner-name-${summonerName.toLowerCase()}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    try {
+      const response = await limitedRequest(() =>
+        axios.get(getSummonerByNameURL(summonerName), { retry: 3, retryDelay: 1000 })
+      );
+      const data = response.data;
+      cache.set(cacheKey, data, 24 * 60 * 60);
+      res.json(data);
+    } catch (err) {
+      if (err.response && err.response.status === 404) {
+        return res.status(404).json({ error: "Summoner not found", code: "NOT_FOUND" });
+      }
+      console.error(`Failed to fetch summoner by name ${summonerName}:`, err.message);
+      res.status(500).json({ error: "Failed to fetch summoner", code: "SUMMONER_ERROR" });
+    }
+  })
+);
+
+// GET /summoner/puuid/:puuid - fetch summoner by PUUID (cached)
+app.get(
+  "/summoner/puuid/:puuid",
+  asyncHandler(async (req, res) => {
+    const puuid = req.params.puuid;
+    const cacheKey = `summoner-puuid-${puuid}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    try {
+      const response = await limitedRequest(() =>
+        axios.get(getSummonerByPUUIDURL(puuid), { retry: 3, retryDelay: 1000 })
+      );
+      const data = response.data;
+      cache.set(cacheKey, data, 24 * 60 * 60);
+      res.json(data);
+    } catch (err) {
+      if (err.response && err.response.status === 404) {
+        return res.status(404).json({ error: "Summoner not found", code: "NOT_FOUND" });
+      }
+      console.error(`Failed to fetch summoner by puuid ${puuid}:`, err.message);
+      res.status(500).json({ error: "Failed to fetch summoner", code: "SUMMONER_ERROR" });
+    }
+  })
+);
+
+// GET /summoner/:encryptedSummonerId/league - ranked entries (cached short)
+app.get(
+  "/summoner/:encryptedSummonerId/league",
+  asyncHandler(async (req, res) => {
+    const id = req.params.encryptedSummonerId;
+    const cacheKey = `league-${id}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    try {
+      const response = await limitedRequest(() =>
+        axios.get(getLeagueEntriesURL(id), { retry: 3, retryDelay: 1000 })
+      );
+      const data = response.data;
+      // Short cache for more frequent updates
+      cache.set(cacheKey, data, 10 * 60);
+      res.json(data);
+    } catch (err) {
+      if (err.response && err.response.status === 404) {
+        // No league entries -> return empty array
+        return res.json([]);
+      }
+      console.error(`Failed to fetch league entries for ${id}:`, err.message);
+      res.status(500).json({ error: "Failed to fetch league entries", code: "LEAGUE_ERROR" });
+    }
+  })
+);
+
+// GET /champion-mastery/:encryptedSummonerId - champion mastery list (cached 1h)
+app.get(
+  "/champion-mastery/:encryptedSummonerId",
+  asyncHandler(async (req, res) => {
+    const id = req.params.encryptedSummonerId;
+    const cacheKey = `champion-mastery-${id}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    try {
+      const response = await limitedRequest(() =>
+        axios.get(getChampionMasteryBySummonerURL(id), { retry: 3, retryDelay: 1000 })
+      );
+      const data = response.data;
+      cache.set(cacheKey, data, 60 * 60);
+      res.json(data);
+    } catch (err) {
+      if (err.response && err.response.status === 404) {
+        return res.status(404).json({ error: "Champion mastery not found", code: "NOT_FOUND" });
+      }
+      console.error(`Failed to fetch champion mastery for ${id}:`, err.message);
+      res.status(500).json({ error: "Failed to fetch champion mastery", code: "MASTERY_ERROR" });
+    }
+  })
+);
 
 // Axios retry logic
 axios.interceptors.response.use(null, async (error) => {
@@ -56,10 +184,16 @@ axios.interceptors.response.use(null, async (error) => {
 
   config.retryCount += 1;
 
+  // Don't retry for client errors except 429 (rate limit)
   if (response && response.status === 403) {
     console.error(
       `403 Forbidden for URL: ${config.url} (Attempt ${config.retryCount})`
     );
+    return Promise.reject(error);
+  }
+
+  if (response && response.status && response.status >= 400 && response.status < 500 && response.status !== 429) {
+    // Client error (4xx) other than 429 — do not retry
     return Promise.reject(error);
   }
 
@@ -81,7 +215,6 @@ axios.interceptors.response.use(null, async (error) => {
 });
 
 // Express app setup
-const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors());
@@ -233,6 +366,166 @@ app.post(
   })
 );
 
+// GET /matches/:matchId - fetch a single match (cached)
+app.get(
+  "/matches/:matchId",
+  asyncHandler(async (req, res) => {
+    const { matchId } = req.params;
+    const cacheKey = `match-${matchId}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
+
+    try {
+      const response = await limitedRequest(() =>
+        axios.get(getMatchDataURL(matchId), { retry: 3, retryDelay: 1000 })
+      );
+      const matchData = response.data;
+      // Cache immutable match data for 24 hours
+      cache.set(cacheKey, matchData, 24 * 60 * 60);
+      res.json(matchData);
+    } catch (err) {
+      if (err.response && err.response.status === 404) {
+        return res.status(404).json({ error: "Match not found", code: "NOT_FOUND" });
+      }
+      console.error(`Failed to fetch match ${matchId}:`, err.message);
+      res.status(500).json({ error: "Failed to fetch match", code: "MATCH_ERROR" });
+    }
+  })
+);
+
+// GET /matches/:matchId/timeline - fetch match timeline (cached)
+app.get(
+  "/matches/:matchId/timeline",
+  asyncHandler(async (req, res) => {
+    const { matchId } = req.params;
+    const cacheKey = `match-timeline-${matchId}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    try {
+      const response = await limitedRequest(() =>
+        axios.get(getMatchTimelineURL(matchId), { retry: 3, retryDelay: 1000 })
+      );
+      const timeline = response.data;
+      cache.set(cacheKey, timeline, 24 * 60 * 60);
+      res.json(timeline);
+    } catch (err) {
+      if (err.response && err.response.status === 404) {
+        return res.status(404).json({ error: "Timeline not found", code: "NOT_FOUND" });
+      }
+      console.error(`Failed to fetch timeline for ${matchId}:`, err.message);
+      res.status(500).json({ error: "Failed to fetch timeline", code: "TIMELINE_ERROR" });
+    }
+  })
+);
+
+// GET /player/:puuid/stats - aggregated stats (winrate, avg KDA, favorite champions)
+app.get(
+  "/player/:puuid/stats",
+  asyncHandler(async (req, res) => {
+    const puuid = req.params.puuid;
+    const numMatches = Math.min(parseInt(req.query.numMatches, 10) || 20, 100);
+    const cacheKey = `player-stats-${puuid}-${numMatches}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    try {
+      const matchesResponse = await limitedRequest(() =>
+        axios.get(getMatchesURL(puuid, 0, numMatches), { retry: 3, retryDelay: 1000 })
+      );
+      const matchIds = matchesResponse.data || [];
+
+      const matchResults = await Promise.all(
+        matchIds.map(async (matchId) => {
+          try {
+            let matchData = cache.get(`match-${matchId}`);
+            if (!matchData) {
+              const resp = await limitedRequest(() =>
+                axios.get(getMatchDataURL(matchId), { retry: 3, retryDelay: 1000 })
+              );
+              matchData = resp.data;
+              cache.set(`match-${matchId}`, matchData, 24 * 60 * 60);
+            }
+            return { matchId, matchData };
+          } catch (err) {
+            return { matchId, error: err };
+          }
+        })
+      );
+
+      const analysis = {
+        puuid,
+        matchesRequested: matchIds.length,
+        matchesAnalyzed: 0,
+        wins: 0,
+        losses: 0,
+        kills: 0,
+        deaths: 0,
+        assists: 0,
+        championStats: {},
+        failedMatches: [],
+      };
+
+      for (const r of matchResults) {
+        if (r.error) {
+          analysis.failedMatches.push(r.matchId);
+          continue;
+        }
+        const matchData = r.matchData;
+        const participant = matchData?.info?.participants?.find((p) => p.puuid === puuid);
+        if (!participant) {
+          analysis.failedMatches.push(r.matchId);
+          continue;
+        }
+
+        analysis.matchesAnalyzed += 1;
+        if (participant.win) analysis.wins += 1;
+        else analysis.losses += 1;
+
+        analysis.kills += participant.kills || 0;
+        analysis.deaths += participant.deaths || 0;
+        analysis.assists += participant.assists || 0;
+
+        const champ = participant.championName || String(participant.championId || "unknown");
+        if (!analysis.championStats[champ])
+          analysis.championStats[champ] = { championName: champ, games: 0, wins: 0, kills: 0, deaths: 0, assists: 0 };
+        const cs = analysis.championStats[champ];
+        cs.games += 1;
+        if (participant.win) cs.wins += 1;
+        cs.kills += participant.kills || 0;
+        cs.deaths += participant.deaths || 0;
+        cs.assists += participant.assists || 0;
+      }
+
+      const analyzed = analysis.matchesAnalyzed || 0;
+      const result = {
+        puuid: analysis.puuid,
+        matchesRequested: analysis.matchesRequested,
+        matchesAnalyzed: analyzed,
+        wins: analysis.wins,
+        losses: analysis.losses,
+        winRate: analyzed ? analysis.wins / analyzed : 0,
+        avgKills: analyzed ? analysis.kills / analyzed : 0,
+        avgDeaths: analyzed ? analysis.deaths / analyzed : 0,
+        avgAssists: analyzed ? analysis.assists / analyzed : 0,
+        topChampions: Object.values(analysis.championStats)
+          .map((c) => ({ ...c, winRate: c.games ? c.wins / c.games : 0 }))
+          .sort((a, b) => b.games - a.games)
+          .slice(0, 5),
+        failedMatches: analysis.failedMatches,
+      };
+
+      cache.set(cacheKey, result, 5 * 60); // cache 5 minutes
+      res.json(result);
+    } catch (err) {
+      console.error("Failed to compute player stats:", err.message);
+      res.status(500).json({ error: "Failed to compute player stats", code: "PLAYER_STATS_ERROR" });
+    }
+  })
+);
+
 // GET /retried-match/:matchId : Get retried match data
 app.get("/retried-match/:matchId", (req, res) => {
   const match = retriedMatchesCache.get(req.params.matchId);
@@ -260,7 +553,12 @@ process.on("SIGINT", () => {
   process.exit();
 });
 
-// Start the server
-app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
-});
+// Start the server when executed directly
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server is running on http://localhost:${PORT}`);
+  });
+}
+
+// Export app for testing
+module.exports = app;
