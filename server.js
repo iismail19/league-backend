@@ -16,15 +16,42 @@ if (!process.env.API_KEY && process.env.NODE_ENV !== 'development') {
 }
 
 const PORT = process.env.PORT || 5005;
-const BASE_URL = "https://americas.api.riotgames.com";
+const BASE_URL = "https://americas.api.riotgames.com"; // Routing server for Account and Match APIs
 const MATCH_LIST_URL = "/lol/match/v5/matches/by-puuid/";
 const MATCH_URL = "/lol/match/v5/matches/";
 const GET_ACCOUNT_BY_SUMMONER_NAME = "/riot/account/v1/accounts/by-riot-id/";
-const SUMMONER_BY_NAME = "/lol/summoner/v4/summoners/by-name/";
 const SUMMONER_BY_PUUID = "/lol/summoner/v4/summoners/by-puuid/";
-const LEAGUE_BY_SUMMONER = "/lol/league/v4/entries/by-summoner/";
-const CHAMPION_MASTERY_BY_SUMMONER = "/lol/champion-mastery/v4/champion-masteries/by-summoner/";
+const LEAGUE_BY_PUUID = "/lol/league/v4/entries/by-puuid/";
+const CHAMPION_MASTERY_BY_PUUID = "/lol/champion-mastery/v4/champion-masteries/by-puuid/";
 const API_KEY = `api_key=${process.env.API_KEY}`;
+
+// Map taglines to regional servers for v4 APIs (Summoner, League, Champion Mastery)
+const getRegionalServer = (tagline) => {
+  const taglineUpper = tagline.toUpperCase();
+  const regionMap = {
+    'NA1': 'https://na1.api.riotgames.com',
+    'NA': 'https://na1.api.riotgames.com',
+    'EUW1': 'https://euw1.api.riotgames.com',
+    'EUW': 'https://euw1.api.riotgames.com',
+    'EUNE1': 'https://eun1.api.riotgames.com',
+    'EUNE': 'https://eun1.api.riotgames.com',
+    'KR': 'https://kr.api.riotgames.com',
+    'BR1': 'https://br1.api.riotgames.com',
+    'BR': 'https://br1.api.riotgames.com',
+    'LAN1': 'https://la1.api.riotgames.com',
+    'LAN': 'https://la1.api.riotgames.com',
+    'LAS1': 'https://la2.api.riotgames.com',
+    'LAS': 'https://la2.api.riotgames.com',
+    'OC1': 'https://oc1.api.riotgames.com',
+    'OCE': 'https://oc1.api.riotgames.com',
+    'RU': 'https://ru.api.riotgames.com',
+    'TR1': 'https://tr1.api.riotgames.com',
+    'TR': 'https://tr1.api.riotgames.com',
+    'JP1': 'https://jp1.api.riotgames.com',
+    'JP': 'https://jp1.api.riotgames.com',
+  };
+  return regionMap[taglineUpper] || 'https://na1.api.riotgames.com'; // Default to NA
+};
 
 console.info("✅ Loaded API Key.");
 
@@ -36,9 +63,17 @@ const limiter = new Bottleneck({
 });
 const limitedRequest = (fn) => limiter.schedule(fn);
 
-// Helper: async error handler
-const asyncHandler = (fn) => (req, res, next) =>
-  Promise.resolve(fn(req, res, next)).catch(next);
+// Helper: async error handler - ensures CORS headers are preserved
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch((err) => {
+    // Ensure CORS headers are set before passing to error handler
+    if (!res.headersSent) {
+      res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
+      res.header("Access-Control-Allow-Credentials", "true");
+    }
+    next(err);
+  });
+};
 
 // Create Express app (declare early so routes can be defined in any order)
 const app = express();
@@ -49,17 +84,20 @@ const getByRiotIdURL = ({ gameName, tagline }) =>
     gameName
   )}/${tagline}?${API_KEY}`;
 
-const getSummonerByNameURL = (summonerName) =>
-  `${BASE_URL}${SUMMONER_BY_NAME}${encodeURIComponent(summonerName)}?${API_KEY}`;
+const getSummonerByPUUIDURL = (puuid, tagline = 'NA1') => {
+  const regionalServer = getRegionalServer(tagline);
+  return `${regionalServer}${SUMMONER_BY_PUUID}${encodeURIComponent(puuid)}?${API_KEY}`;
+};
 
-const getSummonerByPUUIDURL = (puuid) =>
-  `${BASE_URL}${SUMMONER_BY_PUUID}${encodeURIComponent(puuid)}?${API_KEY}`;
+const getLeagueEntriesByPuuidURL = (puuid, tagline = 'NA1') => {
+  const regionalServer = getRegionalServer(tagline);
+  return `${regionalServer}${LEAGUE_BY_PUUID}${encodeURIComponent(puuid)}?${API_KEY}`;
+};
 
-const getLeagueEntriesURL = (encryptedSummonerId) =>
-  `${BASE_URL}${LEAGUE_BY_SUMMONER}${encodeURIComponent(encryptedSummonerId)}?${API_KEY}`;
-
-const getChampionMasteryBySummonerURL = (encryptedSummonerId) =>
-  `${BASE_URL}${CHAMPION_MASTERY_BY_SUMMONER}${encodeURIComponent(encryptedSummonerId)}?${API_KEY}`;
+const getChampionMasteryByPuuidURL = (puuid, tagline = 'NA1') => {
+  const regionalServer = getRegionalServer(tagline);
+  return `${regionalServer}${CHAMPION_MASTERY_BY_PUUID}${encodeURIComponent(puuid)}?${API_KEY}`;
+};
 
 const getMatchesURL = (puuid, start = 0, count = 20) =>
   `${BASE_URL}${MATCH_LIST_URL}${puuid}/ids?start=${start}&count=${count}&${API_KEY}`;
@@ -70,44 +108,20 @@ const getMatchDataURL = (matchId) =>
 const getMatchTimelineURL = (matchId) =>
   `${BASE_URL}${MATCH_URL}${matchId}/timeline?${API_KEY}`;
 
-// GET /summoner/name/:summonerName - fetch summoner by name (cached)
-app.get(
-  "/summoner/name/:summonerName",
-  asyncHandler(async (req, res) => {
-    const summonerName = req.params.summonerName;
-    const cacheKey = `summoner-name-${summonerName.toLowerCase()}`;
-    const cached = cache.get(cacheKey);
-    if (cached) return res.json(cached);
-
-    try {
-      const response = await limitedRequest(() =>
-        axios.get(getSummonerByNameURL(summonerName), { retry: 3, retryDelay: 1000 })
-      );
-      const data = response.data;
-      cache.set(cacheKey, data, 24 * 60 * 60);
-      res.json(data);
-    } catch (err) {
-      if (err.response && err.response.status === 404) {
-        return res.status(404).json({ error: "Summoner not found", code: "NOT_FOUND" });
-      }
-      console.error(`Failed to fetch summoner by name ${summonerName}:`, err.message);
-      res.status(500).json({ error: "Failed to fetch summoner", code: "SUMMONER_ERROR" });
-    }
-  })
-);
-
 // GET /summoner/puuid/:puuid - fetch summoner by PUUID (cached)
+// Optional query param: ?tagline=NA1 (to determine regional server)
 app.get(
   "/summoner/puuid/:puuid",
   asyncHandler(async (req, res) => {
     const puuid = req.params.puuid;
+    const tagline = req.query.tagline || 'NA1'; // Default to NA1
     const cacheKey = `summoner-puuid-${puuid}`;
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
     try {
       const response = await limitedRequest(() =>
-        axios.get(getSummonerByPUUIDURL(puuid), { retry: 3, retryDelay: 1000 })
+        axios.get(getSummonerByPUUIDURL(puuid, tagline), { retry: 3, retryDelay: 1000 })
       );
       const data = response.data;
       cache.set(cacheKey, data, 24 * 60 * 60);
@@ -117,51 +131,124 @@ app.get(
         return res.status(404).json({ error: "Summoner not found", code: "NOT_FOUND" });
       }
       console.error(`Failed to fetch summoner by puuid ${puuid}:`, err.message);
+      // Ensure CORS headers are set on error responses
+      res.header("Access-Control-Allow-Origin", "*");
       res.status(500).json({ error: "Failed to fetch summoner", code: "SUMMONER_ERROR" });
     }
   })
 );
 
-// GET /summoner/:encryptedSummonerId/league - ranked entries (cached short)
+// GET /summoner/:encryptedSummonerId/league - ranked entries (NO CACHE - for debugging)
+// Optional query param: ?tagline=NA1 (to determine regional server)
+// Also supports ?puuid=... to use by-puuid endpoint (which has better API key access)
 app.get(
   "/summoner/:encryptedSummonerId/league",
   asyncHandler(async (req, res) => {
     const id = req.params.encryptedSummonerId;
-    const cacheKey = `league-${id}`;
-    const cached = cache.get(cacheKey);
-    if (cached) return res.json(cached);
+    const tagline = req.query.tagline || 'NA1'; // Default to NA1
+    const puuid = req.query.puuid; // Use puuid if provided (better API key access)
+    
+    // DISABLED CACHING FOR DEBUGGING
+    // const cacheKey = puuid ? `league-puuid-${puuid}` : `league-${id}`;
+    // const cached = cache.get(cacheKey);
+    // if (cached) {
+    //   return res.json(cached);
+    // }
 
     try {
+      // Use by-puuid endpoint (required for API key access)
+      if (!puuid) {
+        return res.status(400).json({ 
+          error: "PUUID is required for league entries", 
+          code: "MISSING_PUUID" 
+        });
+      }
+      const url = getLeagueEntriesByPuuidURL(puuid, tagline);
+      console.log(`[LEAGUE] Fetching rank data for puuid: ${puuid}, tagline: ${tagline}`);
+      console.log(`[LEAGUE] URL: ${url}`);
+      
       const response = await limitedRequest(() =>
-        axios.get(getLeagueEntriesURL(id), { retry: 3, retryDelay: 1000 })
+        axios.get(url, { retry: 3, retryDelay: 1000 })
       );
       const data = response.data;
-      // Short cache for more frequent updates
-      cache.set(cacheKey, data, 10 * 60);
+      console.log(`[LEAGUE] Response status: ${response.status}`);
+      console.log(`[LEAGUE] Response data:`, JSON.stringify(data, null, 2));
+      
+      // DISABLED CACHING FOR DEBUGGING
+      // cache.set(cacheKey, data, 10 * 60);
+      
+      // Explicitly set CORS headers before sending response
+      const origin = req.headers.origin;
+      if (origin && ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'].includes(origin)) {
+        res.header("Access-Control-Allow-Origin", origin);
+      } else {
+        res.header("Access-Control-Allow-Origin", "*");
+      }
+      res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+      res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.header("Access-Control-Allow-Credentials", "true");
+      
       res.json(data);
     } catch (err) {
+      // Ensure CORS headers on error response (before sending response)
+      const origin = req.headers.origin;
+      if (origin && ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'].includes(origin)) {
+        res.header("Access-Control-Allow-Origin", origin);
+      } else {
+        res.header("Access-Control-Allow-Origin", "*");
+      }
+      res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+      res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.header("Access-Control-Allow-Credentials", "true");
+      
       if (err.response && err.response.status === 404) {
         // No league entries -> return empty array
         return res.json([]);
       }
-      console.error(`Failed to fetch league entries for ${id}:`, err.message);
-      res.status(500).json({ error: "Failed to fetch league entries", code: "LEAGUE_ERROR" });
+      
+      // Handle 403 Forbidden - API key may not have permission for League v4
+      if (err.response && err.response.status === 403) {
+        console.error(`[LEAGUE] 403 Forbidden - API key may not have permission for League v4 endpoint`);
+        console.error(`[LEAGUE] URL: ${getLeagueEntriesByPuuidURL(puuid, tagline)}`);
+        console.error(`[LEAGUE] Response data:`, err.response.data);
+        // Return empty array instead of error - rank data is optional
+        return res.json([]);
+      }
+      
+      console.error(`[LEAGUE] Failed to fetch league entries for ${id}:`, err.message);
+      if (err.response) {
+        console.error(`[LEAGUE] Riot API error: ${err.response.status} - ${err.response.statusText}`);
+        console.error(`[LEAGUE] URL: ${getLeagueEntriesByPuuidURL(puuid, tagline)}`);
+        console.error(`[LEAGUE] Response data:`, err.response.data);
+        
+        // Return more detailed error to frontend for debugging
+        return res.status(err.response.status || 500).json({ 
+          error: "Failed to fetch league entries", 
+          code: "LEAGUE_ERROR",
+          details: err.response.data,
+          status: err.response.status,
+          url: getLeagueEntriesByPuuidURL(puuid, tagline)
+        });
+      }
+      res.status(500).json({ error: "Failed to fetch league entries", code: "LEAGUE_ERROR", message: err.message });
     }
   })
 );
 
-// GET /champion-mastery/:encryptedSummonerId - champion mastery list (cached 1h)
+// GET /champion-mastery/:puuid - champion mastery list by PUUID (cached 1h)
+// Optional query param: ?tagline=NA1 (to determine regional server)
 app.get(
-  "/champion-mastery/:encryptedSummonerId",
+  "/champion-mastery/:puuid",
   asyncHandler(async (req, res) => {
-    const id = req.params.encryptedSummonerId;
-    const cacheKey = `champion-mastery-${id}`;
+    const puuid = req.params.puuid;
+    const tagline = req.query.tagline || 'NA1'; // Default to NA1
+    const cacheKey = `champion-mastery-puuid-${puuid}`;
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
     try {
       const response = await limitedRequest(() =>
-        axios.get(getChampionMasteryBySummonerURL(id), { retry: 3, retryDelay: 1000 })
+        axios.get(getChampionMasteryByPuuidURL(puuid, tagline), { retry: 3, retryDelay: 1000 })
       );
       const data = response.data;
       cache.set(cacheKey, data, 60 * 60);
@@ -170,7 +257,7 @@ app.get(
       if (err.response && err.response.status === 404) {
         return res.status(404).json({ error: "Champion mastery not found", code: "NOT_FOUND" });
       }
-      console.error(`Failed to fetch champion mastery for ${id}:`, err.message);
+      console.error(`Failed to fetch champion mastery for ${puuid}:`, err.message);
       res.status(500).json({ error: "Failed to fetch champion mastery", code: "MASTERY_ERROR" });
     }
   })
@@ -217,11 +304,19 @@ axios.interceptors.response.use(null, async (error) => {
 });
 
 // Express app setup
+// CORS must be first to handle preflight requests
+app.use(cors({
+  origin: ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'], // Explicitly allow common dev ports
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cors());
 app.use(compression());
-app.use(helmet()); // Security headers
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+})); // Security headers
 
 // Development mock: if running in development without an API key, provide a simple mock response
 if (process.env.NODE_ENV === 'development' && !process.env.API_KEY) {
@@ -313,10 +408,22 @@ app.post(
     let matchDataList = cache.get(matchesCacheKey);
 
     if (matchDataList) {
+      // Try to extract summonerId from cached match data
+      let summonerId = null;
+      if (matchDataList.length > 0) {
+        const firstMatch = matchDataList[0];
+        const playerParticipant = firstMatch?.info?.participants?.find(
+          (p) => p.puuid === puuidData.puuid
+        );
+        if (playerParticipant?.summonerId) {
+          summonerId = playerParticipant.summonerId;
+        }
+      }
       return res.json({
         puuid: puuidData.puuid,
         matchDataList,
         failedMatches: [],
+        summonerId: summonerId,
       });
     }
 
@@ -383,10 +490,28 @@ app.post(
       });
     }
 
+    // Try to get summoner data from first match if available (to avoid extra API call)
+    let summonerData = null;
+    if (successfulMatches.length > 0) {
+      try {
+        const firstMatch = successfulMatches[0];
+        const playerParticipant = firstMatch?.info?.participants?.find(
+          (p) => p.puuid === puuidData.puuid
+        );
+        // Match v5 participants might have summonerId field
+        if (playerParticipant?.summonerId) {
+          summonerData = { id: playerParticipant.summonerId };
+        }
+      } catch (err) {
+        // Ignore - we'll fetch it separately if needed
+      }
+    }
+
     res.json({
       puuid: puuidData.puuid,
       matchDataList: successfulMatches,
       failedMatches,
+      summonerId: summonerData?.id, // Include if we found it
     });
   })
 );
@@ -586,9 +711,21 @@ app.get("/retried-match/:matchId", (req, res) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err.stack);
-  res
-    .status(500)
-    .json({ error: "An unexpected error occurred.", code: "INTERNAL_ERROR" });
+  // Ensure CORS headers are set even on errors
+  const origin = req.headers.origin;
+  if (origin && ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'].includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+  } else {
+    res.header("Access-Control-Allow-Origin", "*");
+  }
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.header("Access-Control-Allow-Credentials", "true");
+  if (!res.headersSent) {
+    res
+      .status(500)
+      .json({ error: "An unexpected error occurred.", code: "INTERNAL_ERROR" });
+  }
 });
 
 // Graceful shutdown
