@@ -709,6 +709,11 @@ app.get("/retried-match/:matchId", (req, res) => {
   }
 });
 
+// GET /ping - ping the server
+app.get("/ping", (req, res) => {
+  res.json({ message: "Pong!" });
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err.stack);
