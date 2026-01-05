@@ -15,7 +15,8 @@ if (!process.env.API_KEY && process.env.NODE_ENV !== 'development') {
   console.warn("⚠️ Running in development mode without API_KEY; endpoints will use mock data where available.");
 }
 
-const PORT = process.env.PORT || 5005;
+const PORT = process.env.NODE_ENV === 'development' ? 5005 : 3000;
+
 const BASE_URL = "https://americas.api.riotgames.com"; // Routing server for Account and Match APIs
 const MATCH_LIST_URL = "/lol/match/v5/matches/by-puuid/";
 const MATCH_URL = "/lol/match/v5/matches/";
