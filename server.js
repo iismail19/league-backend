@@ -69,7 +69,15 @@ const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch((err) => {
     // Ensure CORS headers are set before passing to error handler
     if (!res.headersSent) {
-      res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
+      const origin = req.headers.origin;
+      if (origin && (
+        ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'].includes(origin) ||
+        origin.match(/^https:\/\/.*\.onrender\.com$/)
+      )) {
+        res.header("Access-Control-Allow-Origin", origin);
+      } else {
+        res.header("Access-Control-Allow-Origin", "*");
+      }
       res.header("Access-Control-Allow-Credentials", "true");
     }
     next(err);
@@ -180,7 +188,10 @@ app.get(
       
       // Explicitly set CORS headers before sending response
       const origin = req.headers.origin;
-      if (origin && ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'].includes(origin)) {
+      if (origin && (
+        ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'].includes(origin) ||
+        origin.match(/^https:\/\/.*\.onrender\.com$/)
+      )) {
         res.header("Access-Control-Allow-Origin", origin);
       } else {
         res.header("Access-Control-Allow-Origin", "*");
@@ -193,7 +204,10 @@ app.get(
     } catch (err) {
       // Ensure CORS headers on error response (before sending response)
       const origin = req.headers.origin;
-      if (origin && ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'].includes(origin)) {
+      if (origin && (
+        ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'].includes(origin) ||
+        origin.match(/^https:\/\/.*\.onrender\.com$/)
+      )) {
         res.header("Access-Control-Allow-Origin", origin);
       } else {
         res.header("Access-Control-Allow-Origin", "*");
@@ -307,7 +321,24 @@ axios.interceptors.response.use(null, async (error) => {
 // Express app setup
 // CORS must be first to handle preflight requests
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'], // Explicitly allow common dev ports
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // Allow localhost origins for development
+    const localhostOrigins = ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'];
+    if (localhostOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    // Allow Render frontend origins (pattern: https://*.onrender.com)
+    if (origin.match(/^https:\/\/.*\.onrender\.com$/)) {
+      return callback(null, true);
+    }
+    
+    // Reject other origins
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -719,7 +750,10 @@ app.use((err, req, res, next) => {
   console.error("Unhandled error:", err.stack);
   // Ensure CORS headers are set even on errors
   const origin = req.headers.origin;
-  if (origin && ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'].includes(origin)) {
+  if (origin && (
+    ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'].includes(origin) ||
+    origin.match(/^https:\/\/.*\.onrender\.com$/)
+  )) {
     res.header("Access-Control-Allow-Origin", origin);
   } else {
     res.header("Access-Control-Allow-Origin", "*");
