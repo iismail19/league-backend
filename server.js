@@ -7,15 +7,15 @@ const Bottleneck = require("bottleneck");
 const helmet = require("helmet");
 require("dotenv").config();
 
-// Validate environment variables (allow running in development without API_KEY)
-if (!process.env.API_KEY && process.env.NODE_ENV !== 'development') {
+// Validate environment variables (allow running in dev without API_KEY)
+if (!process.env.API_KEY && process.env.NODE_ENV !== 'dev') {
   console.error("❌ API_KEY is missing from environment variables.");
   process.exit(1);
-} else if (!process.env.API_KEY && process.env.NODE_ENV === 'development') {
-  console.warn("⚠️ Running in development mode without API_KEY; endpoints will use mock data where available.");
+} else if (!process.env.API_KEY && process.env.NODE_ENV === 'dev') {
+  console.warn("⚠️ Running in dev mode without API_KEY; endpoints will use mock data where available.");
 }
 
-const PORT = process.env.NODE_ENV === 'development' ? 5005 : 3000;
+const PORT = process.env.NODE_ENV === 'dev' ? 5005 : 3000;
 
 const BASE_URL = "https://americas.api.riotgames.com"; // Routing server for Account and Match APIs
 const MATCH_LIST_URL = "/lol/match/v5/matches/by-puuid/";
@@ -350,8 +350,8 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 })); // Security headers
 
-// Development mock: if running in development without an API key, provide a simple mock response
-if (process.env.NODE_ENV === 'development' && !process.env.API_KEY) {
+// Development mock: if running in dev without an API key, provide a simple mock response
+if (process.env.NODE_ENV === 'dev' && !process.env.API_KEY) {
   app.post('/', (req, res) => {
     const { gameName, tagline } = req.body || {};
     const puuid = 'dev-puuid';
@@ -758,7 +758,7 @@ app.get("/health", (req, res) => {
 app.get("/ready", (req, res) => {
   // Check if server is ready to accept traffic
   // In production, you might want to check API key availability, database connections, etc.
-  const isReady = process.env.API_KEY || process.env.NODE_ENV === 'development';
+  const isReady = process.env.API_KEY || process.env.NODE_ENV === 'dev';
   
   if (isReady) {
     res.status(200).json({ 
