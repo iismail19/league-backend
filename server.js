@@ -745,6 +745,35 @@ app.get("/ping", (req, res) => {
   res.json({ message: "Pong!" });
 });
 
+// GET /health - health check endpoint
+app.get("/health", (req, res) => {
+  res.status(200).json({ 
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+// GET /ready - readiness check endpoint
+app.get("/ready", (req, res) => {
+  // Check if server is ready to accept traffic
+  // In production, you might want to check API key availability, database connections, etc.
+  const isReady = process.env.API_KEY || process.env.NODE_ENV === 'development';
+  
+  if (isReady) {
+    res.status(200).json({ 
+      status: "ready",
+      timestamp: new Date().toISOString()
+    });
+  } else {
+    res.status(503).json({ 
+      status: "not ready",
+      reason: "API key not configured",
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err.stack);
