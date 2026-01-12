@@ -103,6 +103,13 @@ const getLeagueEntriesByPuuidURL = (puuid, tagline = 'NA1') => {
   return `${regionalServer}${LEAGUE_BY_PUUID}${encodeURIComponent(puuid)}?${API_KEY}`;
 };
 
+// #region agent log
+const getLeagueEntriesBySummonerIdURL = (encryptedSummonerId, tagline = 'NA1') => {
+  const regionalServer = getRegionalServer(tagline);
+  return `${regionalServer}/lol/league/v4/entries/by-summoner/${encodeURIComponent(encryptedSummonerId)}?${API_KEY}`;
+};
+// #endregion
+
 const getChampionMasteryByPuuidURL = (puuid, tagline = 'NA1') => {
   const regionalServer = getRegionalServer(tagline);
   return `${regionalServer}${CHAMPION_MASTERY_BY_PUUID}${encodeURIComponent(puuid)}?${API_KEY}`;
@@ -165,23 +172,63 @@ app.get(
     // }
 
     try {
-      // Use by-puuid endpoint (required for API key access)
-      if (!puuid) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/c26ae49e-c3be-4421-afe5-e151c9772f9f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:167',message:'League endpoint called',data:{encryptedSummonerId:id,puuid:puuid,tagline:tagline},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
+      
+      // Try by-summoner endpoint first (standard League v4 endpoint)
+      let url, response, data;
+      if (id && id !== 'placeholder') {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/c26ae49e-c3be-4421-afe5-e151c9772f9f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:172',message:'Using by-summoner endpoint',data:{encryptedSummonerId:id,tagline:tagline},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
+        url = getLeagueEntriesBySummonerIdURL(id, tagline);
+        console.log(`[LEAGUE] Fetching rank data using by-summoner endpoint for id: ${id}, tagline: ${tagline}`);
+        console.log(`[LEAGUE] URL: ${url}`);
+        
+        try {
+          response = await limitedRequest(() =>
+            axios.get(url, { retry: 3, retryDelay: 1000 })
+          );
+          data = response.data;
+          console.log(`[LEAGUE] Response status: ${response.status}`);
+          console.log(`[LEAGUE] Response data:`, JSON.stringify(data, null, 2));
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/c26ae49e-c3be-4421-afe5-e151c9772f9f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:186',message:'By-summoner response received',data:{status:response.status,dataLength:Array.isArray(data)?data.length:'not-array',isEmpty:Array.isArray(data)&&data.length===0},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+          // #endregion
+        } catch (summonerErr) {
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/c26ae49e-c3be-4421-afe5-e151c9772f9f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:189',message:'By-summoner endpoint failed, trying by-puuid',data:{error:summonerErr.message,status:summonerErr.response?.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+          // #endregion
+          console.log(`[LEAGUE] By-summoner endpoint failed, falling back to by-puuid: ${summonerErr.message}`);
+          // Fall through to by-puuid attempt
+        }
+      }
+      
+      // Fallback to by-puuid if by-summoner failed or not available
+      if (!response && puuid) {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/c26ae49e-c3be-4421-afe5-e151c9772f9f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:197',message:'Using by-puuid endpoint (fallback)',data:{puuid:puuid,tagline:tagline},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+        url = getLeagueEntriesByPuuidURL(puuid, tagline);
+        console.log(`[LEAGUE] Fetching rank data using by-puuid endpoint for puuid: ${puuid}, tagline: ${tagline}`);
+        console.log(`[LEAGUE] URL: ${url}`);
+        
+        response = await limitedRequest(() =>
+          axios.get(url, { retry: 3, retryDelay: 1000 })
+        );
+        data = response.data;
+        console.log(`[LEAGUE] Response status: ${response.status}`);
+        console.log(`[LEAGUE] Response data:`, JSON.stringify(data, null, 2));
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/c26ae49e-c3be-4421-afe5-e151c9772f9f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:207',message:'By-puuid response received',data:{status:response.status,dataLength:Array.isArray(data)?data.length:'not-array',isEmpty:Array.isArray(data)&&data.length===0},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+      } else if (!puuid && (!id || id === 'placeholder')) {
         return res.status(400).json({ 
-          error: "PUUID is required for league entries", 
-          code: "MISSING_PUUID" 
+          error: "PUUID or encryptedSummonerId is required for league entries", 
+          code: "MISSING_ID" 
         });
       }
-      const url = getLeagueEntriesByPuuidURL(puuid, tagline);
-      console.log(`[LEAGUE] Fetching rank data for puuid: ${puuid}, tagline: ${tagline}`);
-      console.log(`[LEAGUE] URL: ${url}`);
-      
-      const response = await limitedRequest(() =>
-        axios.get(url, { retry: 3, retryDelay: 1000 })
-      );
-      const data = response.data;
-      console.log(`[LEAGUE] Response status: ${response.status}`);
-      console.log(`[LEAGUE] Response data:`, JSON.stringify(data, null, 2));
       
       // DISABLED CACHING FOR DEBUGGING
       // cache.set(cacheKey, data, 10 * 60);
