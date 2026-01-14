@@ -58,11 +58,47 @@ console.info("✅ Loaded API Key.");
 
 // Setup cache and rate limiter
 const cache = new NodeCache({ stdTTL: 600 }); // 10 minutes
+
+// Conservative rate limiting: 80 requests per 2 minutes (Riot allows 100, but we use 80 as safety buffer)
 const limiter = new Bottleneck({
-  maxConcurrent: 20,
-  minTime: 50,
+  reservoir: 80,              // 80 requests (not 100) - safety buffer for retries
+  reservoirRefreshAmount: 80,
+  reservoirRefreshInterval: 120 * 1000, // 2 minutes
+  maxConcurrent: 10,
+  minTime: 50                 // 20 requests/sec max
 });
 const limitedRequest = (fn) => limiter.schedule(fn);
+
+// Rate limit tracking for frontend warning
+let requestCount = 0;
+let windowStart = Date.now();
+
+const trackRequest = () => {
+  const now = Date.now();
+  if (now - windowStart > 120000) {
+    // Reset window
+    requestCount = 0;
+    windowStart = now;
+  }
+  requestCount++;
+  return requestCount;
+};
+
+const getRetryAfter = () => {
+  if (requestCount >= 70) {
+    // Approaching limit, calculate seconds until window resets
+    const elapsed = Date.now() - windowStart;
+    const remaining = Math.ceil((120000 - elapsed) / 1000);
+    return remaining > 0 ? remaining : null;
+  }
+  return null;
+};
+
+// Reset rate limit tracking for testing purposes
+const resetRateLimitTracking = () => {
+  requestCount = 0;
+  windowStart = Date.now();
+};
 
 // Helper: async error handler - ensures CORS headers are preserved
 const asyncHandler = (fn) => (req, res, next) => {
@@ -308,7 +344,7 @@ app.get(
   })
 );
 
-// Axios retry logic
+// Axios retry logic with exponential backoff
 axios.interceptors.response.use(null, async (error) => {
   const { config, response } = error;
   if (!config || !config.retry) return Promise.reject(error);
@@ -332,17 +368,20 @@ axios.interceptors.response.use(null, async (error) => {
   }
 
   if (response && response.status === 429) {
-    const retryAfter = response.headers["retry-after"]
-      ? parseInt(response.headers["retry-after"], 10) * 1000
-      : 5000;
+    // Rate limited - use Retry-After header or exponential backoff
+    const retryAfterHeader = response.headers["retry-after"];
+    const retryAfter = retryAfterHeader
+      ? parseInt(retryAfterHeader, 10) * 1000
+      : Math.pow(2, config.retryCount) * 1000; // Exponential backoff: 2s, 4s, 8s
     console.warn(
-      `Rate limited (429). Backing off for ${retryAfter}ms (Attempt ${config.retryCount})`
+      `Rate limited (429). Waiting ${retryAfter / 1000}s before retry ${config.retryCount}/${config.retry}`
     );
     await new Promise((resolve) => setTimeout(resolve, retryAfter));
   } else {
-    await new Promise((resolve) =>
-      setTimeout(resolve, config.retryDelay || 1000)
-    );
+    // For other errors, use exponential backoff: 1s, 2s, 4s
+    const delay = Math.pow(2, config.retryCount - 1) * 1000;
+    console.log(`Retry ${config.retryCount}/${config.retry} after ${delay}ms`);
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
 
   return axios(config);
@@ -439,16 +478,27 @@ function validateBody(requiredFields) {
   };
 }
 
-// POST / : Get user PUUID and matches
+// POST / : Get user PUUID and matches with pagination support
 app.post(
   "/",
   validateBody(["gameName", "tagline"]),
   asyncHandler(async (req, res) => {
-    const { gameName, tagline } = req.body;
+    const { gameName, tagline, start = 0, count = 20 } = req.body;
+
+    // Validate pagination parameters
+    const startIndex = Math.max(0, parseInt(start, 10) || 0);
+    const matchCount = Math.min(Math.max(1, parseInt(count, 10) || 20), 100); // Max 100 matches per request
+
     const cacheKey = `puuid-${gameName}-${tagline}`;
     let puuidData = cache.get(cacheKey);
 
-    retriedMatchesCache.clear();
+    // Only clear retried matches cache on initial request (start = 0)
+    if (startIndex === 0) {
+      retriedMatchesCache.clear();
+    }
+
+    // Track this request for rate limiting
+    trackRequest();
 
     if (!puuidData) {
       const url = getByRiotIdURL({ gameName, tagline });
@@ -466,10 +516,12 @@ app.post(
       }
     }
 
+    // For paginated requests, don't use cache (each page is unique)
+    // Only cache initial request (start = 0) for backwards compatibility
     const matchesCacheKey = `matches-${puuidData.puuid}`;
-    let matchDataList = cache.get(matchesCacheKey);
+    let matchDataList = startIndex === 0 ? cache.get(matchesCacheKey) : null;
 
-    if (matchDataList) {
+    if (matchDataList && startIndex === 0) {
       // Try to extract summonerId from cached match data
       let summonerId = null;
       if (matchDataList.length > 0) {
@@ -481,18 +533,27 @@ app.post(
           summonerId = playerParticipant.summonerId;
         }
       }
+
+      // Get rate limit info for response
+      const retryAfter = getRetryAfter();
+
       return res.json({
         puuid: puuidData.puuid,
         matchDataList,
         failedMatches: [],
         summonerId: summonerId,
+        // Pagination metadata
+        hasMore: matchDataList.length === matchCount,
+        nextStartIndex: startIndex + matchDataList.length,
+        totalLoaded: startIndex + matchDataList.length,
+        retryAfter: retryAfter,
       });
     }
 
-    // Fetch match IDs
+    // Fetch match IDs with pagination parameters
     let listOfMatches;
     try {
-      const matchesURL = getMatchesURL(puuidData.puuid);
+      const matchesURL = getMatchesURL(puuidData.puuid, startIndex, matchCount);
       const response = await limitedRequest(() =>
         axios.get(matchesURL, { retry: 3, retryDelay: 1000 })
       );
@@ -511,6 +572,9 @@ app.post(
     matchDataList = await Promise.all(
       listOfMatches.map(async (matchId) => {
         try {
+          // Track each match request for rate limiting
+          trackRequest();
+
           return await limitedRequest(async () => {
             if (matchCache.has(matchId)) return matchCache.get(matchId);
             const matchDataURL = getMatchDataURL(matchId);
@@ -533,7 +597,11 @@ app.post(
     );
 
     const successfulMatches = matchDataList.filter(Boolean);
-    cache.set(matchesCacheKey, successfulMatches);
+
+    // Only cache initial request (start = 0) for backwards compatibility
+    if (startIndex === 0) {
+      cache.set(matchesCacheKey, successfulMatches);
+    }
 
     // Retry failed matches in the background
     if (failedMatches.length > 0) {
@@ -569,11 +637,19 @@ app.post(
       }
     }
 
+    // Get rate limit info for response
+    const retryAfter = getRetryAfter();
+
     res.json({
       puuid: puuidData.puuid,
       matchDataList: successfulMatches,
       failedMatches,
       summonerId: summonerData?.id, // Include if we found it
+      // Pagination metadata
+      hasMore: listOfMatches.length === matchCount, // If we got full count, likely more exist
+      nextStartIndex: startIndex + listOfMatches.length,
+      totalLoaded: startIndex + listOfMatches.length,
+      retryAfter: retryAfter, // null or seconds to wait
     });
   })
 );
@@ -840,5 +916,6 @@ if (require.main === module) {
   });
 }
 
-// Export app for testing
+// Export app and utilities for testing
 module.exports = app;
+module.exports.resetRateLimitTracking = resetRateLimitTracking;
